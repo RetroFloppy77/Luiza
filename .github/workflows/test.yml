@@ -1,0 +1,26 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Scarica il codice del repository
+        uses: actions/checkout@v4
+
+      - name: Configura l'ambiente Lua
+        uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: "5.4.2"
+
+      - name: Test interattivo automatizzato di Luiza
+        run: |
+          # Simula un utente che scrive "Hello" e poi "esci" per terminare
+          # Il comando "echo -e" invia gli input separati da invio (\n)
+          echo -e "Hello\nesci" | lua src/luiza.lua
