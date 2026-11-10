@@ -6,6 +6,17 @@
 -- Descrizione: Adattamento in Lua standard dello storico chatbot ELIZA (1966)
 -- =====================================================================
 
+-- ###########################################################################
+-- GITHUB WORKFLOW:
+-- Tabella del modulo che conterrà le funzioni e le variabili pubbliche
+local M = {}
+
+-- In questo modo, quando il workflow viene eseguito, troverà version = "0.6.0"
+-- e la aggiornerà automaticamente a version = "0.6.1" (o successiva),
+-- salvando le modifiche direttamente nel repository.
+M.version = "0.6.0"
+-- ############################################################################
+
 -- Inizializza il generatore di numeri casuali basandosi sull'orario di sistema
 math.randomseed(os.time())
 
@@ -230,4 +241,6 @@ while true do
     end
 end
 
+-- Esporta la tabella del modulo Luiza con tutte le sue funzioni e attributi.
+-- @return table Il modulo luiza contenente la logica del chatbot e i metadati.
 return M
