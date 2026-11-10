@@ -1,0 +1,59 @@
+name: Release and Version Bump
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Necessario per leggere la history dei tag e dei commit
+
+      - name: Set up Lua
+        uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: "5.4"
+
+      - name: Run Tests before release
+        run: |
+          lua test/test_luiza.lua
+
+      - name: Calculate Next Version
+        id: semver
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          major_pattern: "[MAJOR]"
+          minor_pattern: "[MINOR]"
+          format: `${version}`
+
+      - name: Update version inside src/luiza.lua
+        run: |
+          NEW_VERSION="${{ steps.semver.outputs.version }}"
+          echo "Aggiornamento di src/luiza.lua alla versione $NEW_VERSION"
+          
+          # Aggiorna la variabile di versione nel codice sorgente
+          sed -i 's/version = "[0-9.]*"/version = "'$NEW_VERSION'"/' src/luiza.lua
+          
+          git diff src/luiza.lua
+
+      - name: Commit version bump
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: bump version to ${{ steps.semver.outputs.version }} [skip ci]"
+          file_pattern: "src/luiza.lua"
+
+      - name: Create Git Tag
+        uses: anothrNick/github-tag-action@1.71.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUSTOM_TAG: ${{ steps.semver.outputs.version }}
+          WITH_V: true
