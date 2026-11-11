@@ -1,7 +1,7 @@
 -- test/test_luiza.lua
 
 -- Dice a Lua di cercare anche nella cartella src/
-package.path = package.path .. ";./src/?.lua"
+package.path = package.path .. ";./?.lua"
 
 local luiza = require("luiza") -- Ora basta chiamare require("luiza")
 
