@@ -1,7 +1,7 @@
 🤖 Luiza (Lua + ELIZA) — v0.9.3 Beta
 <p align="center"> <img src="https://img.shields.io/badge/Language-Lua-blue.svg?style=flat-square&logo=lua" alt="Language: Lua"> <img src="https://img.shields.io/badge/License-GPL--3.0-green.svg?style=flat-square" alt="License: GPL-3.0"> <img src="https://img.shields.io/badge/Version-0.9.3--beta-brightgreen.svg?style=flat-square" alt="Version: 0.9.3 Beta"> <img src="https://img.shields.io/badge/Author-Stefano%20Peris-orange.svg?style=flat-square" alt="Author: Stefano Peris"> </p>
 
-<p align="center"> **Autore:** Stefano Peris · **Email:** [stefanoperis.github@gmail.com](mailto:stefanoperis.github@gmail.com) · **GitHub:** [@RetroFloppy77](https://github.com/RetroFloppy77) </p>
+<p align="center"> **Autore:** Stefano Peris · **Email:** [stefanoperis.github@gmail.com](mailto:stefanoperis.github@gmail.com) · **GitHub:** (https://github.com/RetroFloppy77) </p>
 
 🕰️ La storia di ELIZA
 La storia di Luiza nasce dall'esperienza di ELIZA, uno dei programmi più importanti nella storia delle interfacce conversazionali. ELIZA fu sviluppato da Joseph Weizenbaum al Massachusetts Institute of Technology (MIT) tra il 1964 e il 1966. Il programma venne presentato nell'articolo “ELIZA—A Computer Program for the Study of Natural Language Communication Between Man and Machine”, pubblicato nel gennaio 1966 sulla rivista Communications of the ACM.
