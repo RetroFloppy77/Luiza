@@ -23,4 +23,4 @@ jobs:
         run: |
           # Simula un utente che scrive "Hello" e poi "esci" per terminare
           # Il comando "echo -e" invia gli input separati da invio (\n)
-          echo -e "Hello\nesci" | lua src/luiza.lua
+          echo -e "Hello\nesci" | lua luiza.lua

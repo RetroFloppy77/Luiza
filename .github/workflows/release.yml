@@ -35,21 +35,21 @@ jobs:
           minor_pattern: "[MINOR]"
           format: `${version}`
 
-      - name: Update version inside src/luiza.lua
+      - name: Update version inside luiza.lua
         run: |
           NEW_VERSION="${{ steps.semver.outputs.version }}"
-          echo "Aggiornamento di src/luiza.lua alla versione $NEW_VERSION"
+          echo "Aggiornamento di luiza.lua alla versione $NEW_VERSION"
           
           # Aggiorna la variabile di versione nel codice sorgente
-          sed -i 's/version = "[0-9.]*"/version = "'$NEW_VERSION'"/' src/luiza.lua
+          sed -i 's/version = "[0-9.]*"/version = "'$NEW_VERSION'"/' luiza.lua
           
-          git diff src/luiza.lua
+          git diff luiza.lua
 
       - name: Commit version bump
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: bump version to ${{ steps.semver.outputs.version }} [skip ci]"
-          file_pattern: "src/luiza.lua"
+          file_pattern: "luiza.lua"
 
       - name: Create Git Tag
         uses: anothrNick/github-tag-action@1.71.0
