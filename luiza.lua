@@ -3,446 +3,852 @@
 -- Email: stefanoperis.github@gmail.com
 -- GitHub: https://www.github.com/RetroFloppy77
 -- Nome Progetto: Luiza (Lua + ELIZA)
--- Versione: 0.9.2 Beta
--- Descrizione: Adattamento avanzato in Lua standard dello storico chatbot
---              ELIZA (1966) ideato da Joseph Weizenbaum.
---              Interamente in italiano, dotato di memoria di contesto estesa,
---              parser basato su scoring di specificità, riflessioni grammaticali
---              avanzate per contrazioni e supporto per test automatici (CI/CD).
+-- Versione: 0.9.3 Beta
+-- Descrizione: Adattamento conversazionale in Lua standard dello storico
+--              chatbot ELIZA (1966), ideato da Joseph Weizenbaum.
+--              Include regole in italiano, selezione per specificita',
+--              riflessioni grammaticali, memoria contestuale e risposte
+--              variate. Il progetto usa esclusivamente il paradigma
+--              procedurale e le librerie standard di Lua.
 -- Licenza: GNU General Public License v3.0 (GPL-3.0)
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- 1. STRUTTURA DEL MODULO & INIZIALIZZAZIONE
+-- 1. STRUTTURA DEL MODULO E INIZIALIZZAZIONE
 -- ---------------------------------------------------------------------
--- Tabella principale del modulo (M) usata sia per l'esportazione verso 
--- script esterni/test automatici, sia per tracciare la versione corrente.
+-- La tabella M espone le funzioni pubbliche del programma. Il motore e le
+-- sue strutture interne restano locali a questo file, così da evitare
+-- modifiche accidentali allo stato della conversazione da parte di altri
+-- moduli.
 local M = {}
 
--- Versione corrente del modulo (utilizzata anche dai workflow CI/CD)
-M.version = "0.9.2"
+M.version = "0.9.3"
 
--- Inizializza il generatore di numeri casuali usando il timestamp di sistema
+-- Il generatore casuale viene inizializzato una volta sola al caricamento
+-- del modulo. La scelta casuale serve a variare le risposte, non a simulare
+-- una comprensione linguistica o un'intelligenza artificiale generativa.
 math.randomseed(os.time())
 
 
 -- ---------------------------------------------------------------------
--- 2. MEMORIA DI CONTESTO ESTESA
+-- 2. MEMORIA CONVERSAZIONALE
 -- ---------------------------------------------------------------------
--- Mantiene traccia dell'ultimo argomento, dello storico recente dei topic
--- e del numero di scambi avvenuti per garantire coerenza conversazionale.
+-- La memoria conserva soltanto informazioni temporanee e non viene salvata
+-- su disco. Lo storico dei topic consente al bot di riprendere un argomento
+-- quando l'utente risponde con una frase breve o poco specifica.
 local context = {
-    last_topic = nil,       -- Memorizza la categoria dell'ultima regola attivata
-    topic_history = {},     -- Storico limitato degli ultimi topic trattati
-    turns_count = 0         -- Contatore dei turni della conversazione
+    last_topic = nil,
+    topic_history = {},
+    last_user_input = nil,
+    turns_count = 0
 }
 
---- Registra un nuovo topic nella memoria di contesto e nello storico.
--- @param topic string: L'etichetta del topic identificato.
+-- Memorizza l'indice dell'ultima risposta scelta per ciascuna categoria.
+-- In questo modo una stessa regola non ripete immediatamente la medesima
+-- frase, purché disponga di almeno due risposte.
+local last_response_index = {}
+
+--- Registra un argomento nella memoria e mantiene uno storico limitato.
+-- @param topic string Etichetta dell'argomento riconosciuto.
 local function push_topic(topic)
-    if not topic then return end
+    if not topic then
+        return
+    end
+
     context.last_topic = topic
-    table.insert(context.topic_history, 1, topic)
-    if #context.topic_history > 5 then
+
+    -- Evita di riempire lo storico con copie consecutive dello stesso topic.
+    if context.topic_history[1] ~= topic then
+        table.insert(context.topic_history, 1, topic)
+    end
+
+    -- Conserva soltanto gli ultimi sei argomenti distinti/consecutivi.
+    while #context.topic_history > 6 do
         table.remove(context.topic_history)
     end
 end
 
+--- Sceglie una risposta evitando, quando possibile, la ripetizione immediata.
+-- @param responses table Elenco delle risposte disponibili.
+-- @param response_key string Chiave usata per ricordare la scelta precedente.
+-- @return string Risposta selezionata.
+local function choose_response(responses, response_key)
+    local count = #responses
+    if count == 0 then
+        return "Puoi raccontarmi qualcosa di più?"
+    end
+
+    local selected = math.random(count)
+    local previous = last_response_index[response_key]
+
+    if count > 1 and selected == previous then
+        -- Sposta l'indice di una posizione: evita un secondo sorteggio
+        -- e garantisce che la risposta sia diversa dalla precedente.
+        selected = (selected % count) + 1
+    end
+
+    last_response_index[response_key] = selected
+    return responses[selected]
+end
+
 
 -- ---------------------------------------------------------------------
--- 3. TABELLA DELLE RIFLESSIONI GRAMMATICALI (Italiano)
+-- 3. NORMALIZZAZIONE E RIFLESSIONE GRAMMATICALE
 -- ---------------------------------------------------------------------
--- Inverte i pronomi, gli aggettivi possessivi e le persone dei verbi
--- per cambiare la prospettiva dall'utente (1a persona) al terapeuta (2a persona).
+-- La riflessione grammaticale ribalta alcune forme dalla prima alla seconda
+-- persona e viceversa. È una tecnica tipica dei chatbot della famiglia
+-- ELIZA: non equivale a un'analisi grammaticale completa della lingua.
 local reflections = {
-    ["io"]         = "tu",
-    ["mio"]        = "tuo",
-    ["mia"]        = "tua",
-    ["miei"]       = "tuoi",
-    ["mie"]        = "tue",
-    ["sono"]       = "sei",
-    ["ero"]        = "eri",
-    ["ho"]         = "hai",
-    ["avevo"]      = "avevi",
-    ["posso"]      = "puoi",
-    ["voglio"]     = "vuoi",
-    ["sento"]      = "senti",
-    ["me"]         = "te",
-    ["mi"]         = "ti",
-    ["ti"]         = "mi",
-    ["tuo"]        = "mio",
-    ["tua"]        = "mia",
-    ["tuoi"]       = "miei",
-    ["tue"]        = "mie",
-    ["tu"]         = "io",
-    ["sei"]        = "sono",
-    ["stavo"]      = "stavi",
-    ["ci"]         = "vi",
-    ["vi"]         = "ci",
-    ["nostro"]     = "vostro",
-    ["nostra"]     = "vostra",
-    ["nostri"]     = "vostri",
-    ["nostre"]     = "vostre"
+    ["io"] = "tu",
+    ["me"] = "te",
+    ["mio"] = "tuo",
+    ["mia"] = "tua",
+    ["miei"] = "tuoi",
+    ["mie"] = "tue",
+    ["sono"] = "sei",
+    ["sei"] = "sono",
+    ["ero"] = "eri",
+    ["eri"] = "ero",
+    ["ho"] = "hai",
+    ["hai"] = "ho",
+    ["avevo"] = "avevi",
+    ["avevi"] = "avevo",
+    ["posso"] = "puoi",
+    ["puoi"] = "posso",
+    ["voglio"] = "vuoi",
+    ["vuoi"] = "voglio",
+    ["sento"] = "senti",
+    ["senti"] = "sento",
+    ["stavo"] = "stavi",
+    ["stavi"] = "stavo",
+    ["mi"] = "ti",
+    ["ti"] = "mi",
+    ["tu"] = "io",
+    ["tuo"] = "mio",
+    ["tua"] = "mia",
+    ["tuoi"] = "miei",
+    ["tue"] = "mie",
+    ["ci"] = "vi",
+    ["vi"] = "ci",
+    ["nostro"] = "vostro",
+    ["nostra"] = "vostra",
+    ["nostri"] = "vostri",
+    ["nostre"] = "vostre",
+    ["vostro"] = "nostro",
+    ["vostra"] = "nostra",
+    ["vostri"] = "nostri",
+    ["vostre"] = "nostre"
 }
 
---- Sostituisce le parole all'interno della stringa catturata dai pattern
--- applicando l'inversione grammaticale e gestendo correttamente le contrazioni.
--- @param text string: Il frammento di frase catturato dall'input dell'utente.
--- @return string: La frase riconvertita con i pronomi aggiornati.
-local function reflect(text)
-    if not text or text == "" then return "" end
-    
-    -- Pulizia preliminare del testo catturato
+--- Rimuove spazi esterni e uniforma alcune forme di punteggiatura.
+-- @param input string Testo originale dell'utente.
+-- @return string Testo normalizzato e convertito in minuscolo.
+local function normalize_input(input)
+    local text = input:lower()
+
+    -- Uniforma apostrofi tipografici e ritorni a capo.
+    text = text:gsub("’", "'"):gsub("‘", "'")
+    text = text:gsub("`", "'"):gsub("´", "'")
+    text = text:gsub("À", "à"):gsub("È", "è"):gsub("É", "é")
+    text = text:gsub("Ì", "ì"):gsub("Ò", "ò"):gsub("Ù", "ù")
+    text = text:gsub("[\r\n\t]", " ")
+
+    -- La punteggiatura finale non deve impedire il riconoscimento di una
+    -- frase. Quella interna viene conservata per non alterare le parole.
+    text = text:gsub("[%.,%!%?%;:]+$", "")
+    text = text:gsub("%s+", " ")
     text = text:gsub("^%s*(.-)%s*$", "%1")
-    
-    local words = {}
-    for word in text:gmatch("%S+") do
-        local lower_word = word:lower()
-        -- Cerca la parola nella tabella; se non presente, mantiene l'originale
-        local reflected_word = reflections[lower_word] or word
-        table.insert(words, reflected_word)
+
+    return text
+end
+
+--- Riflette i pronomi e i verbi contenuti in una frase catturata.
+-- La funzione separa la punteggiatura ASCII iniziale/finale, sostituisce
+-- soltanto la parola e poi ricompone il token.
+-- @param text string Frase da trasformare.
+-- @return string Frase con le riflessioni applicate.
+local function reflect(text)
+    if not text or text == "" then
+        return ""
     end
-    
+
+    local words = {}
+
+    for token in text:gmatch("%S+") do
+        local prefix = token:match("^(%p*)") or ""
+        local remaining = token:sub(#prefix + 1)
+        local suffix = remaining:match("(%p*)$") or ""
+        local word = remaining:sub(1, #remaining - #suffix)
+
+        local reflected_word = reflections[word] or word
+        table.insert(words, prefix .. reflected_word .. suffix)
+    end
+
     return table.concat(words, " ")
 end
 
 
 -- ---------------------------------------------------------------------
--- 4. REGOLE CONVERSAZIONALI E PATTERN ESPANSI
+-- 4. FUNZIONI DI RICONOSCIMENTO DEI PATTERN
+-- ---------------------------------------------------------------------
+-- Lua usa i propri pattern (string patterns), che non sono espressioni
+-- regolari complete: in particolare NON supportano l'alternativa "|".
+-- Per questo motivo le parole chiave sono elencate separatamente e cercate
+-- come testo semplice; i pattern con catture sono usati solo per le frasi
+-- che devono fornire una parte variabile (%1, %2, ...).
+
+--- Indica se un byte appartiene a una parola, incluse le lettere UTF-8.
+-- Considerare come lettere anche i byte >= 128 evita di spezzare parole
+-- accentate durante il controllo dei confini.
+-- @param value number|nil Byte da controllare.
+-- @return boolean True se il byte fa parte di una parola.
+local function is_word_byte(value)
+    if not value then
+        return false
+    end
+
+    return (value >= 48 and value <= 57)
+        or (value >= 65 and value <= 90)
+        or (value >= 97 and value <= 122)
+        or value >= 128
+        or value == 95
+end
+
+--- Cerca una parola o una frase completa, senza corrispondenze parziali.
+-- @param text string Testo normalizzato.
+-- @param phrase string Parola o sequenza da cercare.
+-- @return boolean True quando la frase è presente come unità completa.
+local function contains_phrase(text, phrase)
+    local start_at = 1
+
+    while true do
+        local first, last = text:find(phrase, start_at, true)
+        if not first then
+            return false
+        end
+
+        local before_is_boundary = first == 1 or not is_word_byte(text:byte(first - 1))
+        local after_is_boundary = last == #text or not is_word_byte(text:byte(last + 1))
+
+        if before_is_boundary and after_is_boundary then
+            return true
+        end
+
+        start_at = last + 1
+    end
+end
+
+--- Calcola un punteggio per una regola: le priorità esplicite prevalgono,
+-- mentre la lunghezza del testo riconosciuto risolve i casi a pari priorità.
+-- @param priority number Priorità assegnata alla regola.
+-- @param matched_text string Pattern o parola che ha prodotto il match.
+-- @return number Punteggio complessivo.
+local function calculate_score(priority, specificity)
+    -- La lunghezza della parte letterale pesa più della priorità: in una
+    -- frase come "voglio cambiare lavoro", il pattern specifico "voglio"
+    -- deve prevalere sulla semplice parola chiave "lavoro". La priorità
+    -- risolve poi i casi con specificità equivalente.
+    return (specificity or 0) * 100 + (priority or 0)
+end
+
+
+-- ---------------------------------------------------------------------
+-- 5. REGOLE CONVERSAZIONALI
 -- ---------------------------------------------------------------------
 -- Ogni regola contiene:
--- - `pattern`: Espressione regolare usata per identificare l'intento dell'utente.
--- - `topic`: Argomento chiave associato (salvato nel contesto).
--- - `responses`: Elenco di risposte dinamiche; %1, %2 vengono sostituiti dalle parti catturate.
+--   topic     : argomento da salvare nella memoria;
+--   priority  : precedenza rispetto alle regole più generiche;
+--   keywords  : parole/frasi cercate come testo semplice;
+--   patterns  : pattern Lua con eventuali gruppi di cattura;
+--   responses : risposte tra cui il motore sceglie senza ripetizioni immediate.
+--
+-- Le regole più specifiche hanno priorità maggiore. Il motore valuta tutte
+-- le regole e non si ferma al primo risultato trovato.
 local rules = {
-    -- Categoria: Bisogni espressi dall'utente
     {
-        pattern = "ho bisogno di (.*)",
         topic = "bisogno",
+        priority = 95,
+        keywords = {},
+        patterns = { "ho bisogno di (.+)", "avrei bisogno di (.+)" },
         responses = {
-            "Perché senti di avere bisogno di %1?",
-            "Pensi che avere %1 ti aiuterebbe davvero a stare meglio?",
-            "Sei sicuro di avere proprio bisogno di %1?",
-            "Cosa cambierebbe nella tua vita se ottenessi %1?",
-            "Credi che dipenda tutto da %1 in questo momento?"
+            "Che cosa rappresenta per te %1 in questo momento?",
+            "Come pensi che %1 potrebbe aiutarti?",
+            "Da quanto tempo senti il bisogno di %1?",
+            "C'è qualcosa che ti impedisce, al momento, di %1?",
+            "Che cosa speri possa cambiare quando riuscirai a %1?"
         }
     },
-    -- Categoria: Incertezza e dubbi sul futuro
     {
-        pattern = "non so (.*)",
-        topic = "incertezza",
+        topic = "limite",
+        priority = 110,
+        keywords = {},
+        patterns = { "perché non posso (.+)", "perche non posso (.+)" },
         responses = {
-            "Cosa ti spaventa di più del non sapere %1?",
-            "Se tu sapessi già la risposta riguardo %1, cosa faresti?",
-            "A volte l'incertezza su %1 blocca ogni azione. Come ti fa sentire?",
-            "Ti capita spesso di sentirti così smarrito quando pensi a %1?"
+            "Che cosa ti fa pensare che questa possibilità sia fuori portata?",
+            "Qual è l'ostacolo più importante che incontri?",
+            "Se questa possibilità diventasse concreta, quale sarebbe il tuo primo passo?"
+        },
+        capture_responses = {
+            "Che cosa ti fa pensare che non puoi %1?",
+            "Qual è l'ostacolo più importante che incontri quando provi a %1?",
+            "Se riuscissi a %1, quale sarebbe il tuo primo passo?"
         }
     },
-    -- Categoria: Rabbia e frustrazione
     {
-        pattern = "arrabbiat[oa]|rabbia|furia|infastidit[oa]|odio",
-        topic = "rabbia",
-        responses = {
-            "La rabbia spesso protegge qualcos'altro, come una delusione o una ferita. Cosa ha scatenato questa furia?",
-            "Quando provi questa rabbia intensa, dove la avverti di più nel corpo?",
-            "Pensi che esprimere questa rabbia possa aiutarti a chiarire la situazione o finisce per logorarti?"
-        }
-    },
-    -- Categoria: Stanchezza ed esaurimento
-    {
-        pattern = "stanchezza|stanc[oa]|esaurit[oa]|sfinito|forze|energia",
-        topic = "stanchezza",
-        responses = {
-            "Hai accumulato troppi pesi ultimamente? Raccontami di cosa ti senti svuotato.",
-            "Quando il corpo e la mente dicono basta, spesso c'è bisogno di fermarsi. Ti stai concedendo il permesso di farlo?",
-            "Cosa sta prosciugando tutte le tue energie in questo periodo?"
-        }
-    },
-    -- Categoria: Senso di colpa
-    {
-        pattern = "colpa|sbagliat[oa]|fallito|fallimento",
-        topic = "colpa",
-        responses = {
-            "Ti stai giudicando troppo severamente?",
-            "Se un amico si trovasse nella tua stessa identica situazione, gli faresti le stesse critiche?",
-            "Credi che commettere errori tolga valore a chi sei?"
-        }
-    },
-    -- Categoria: Sogni e Progetti
-    {
-        pattern = "sogno|sognare|passione|vorrei tanto (.*)|desiderio",
-        topic = "sogni",
-        responses = {
-            "Coltivare i propri desideri è fondamentale. Cosa ti impedisce di realizzare %1?",
-            "Parlami di più di questo sogno. Che emozione ti dà solo a pensarci?",
-            "Se non ci fossero ostacoli esterni, come cambierebbe la tua strada verso %1?"
-        }
-    },
-    -- Categoria: Domande dirette al chatbot
-    {
-        pattern = "perché non (.*)",
         topic = "domanda_perche",
+        priority = 100,
+        keywords = {},
+        patterns = { "perché non (.+)", "perche non (.+)" },
         responses = {
-            "Pensi davvero che io non %1?",
-            "Forse a tempo debito potrò %1, ma adesso concentriamoci su di te.",
-            "Vuoi davvero che io %1?",
-            "Credi che la soluzione stia nel fatto che io %1?"
-        }
-    },
-    -- Categoria: Sensazione di blocco / Impossibilità
-    {
-        pattern = "perché non posso (.*)",
-        topic = "limite",
-        responses = {
-            "Pensi che dovresti essere in grado di %1?",
-            "Se potessi %1, cosa faresti subito dopo?",
-            "Non saprei... secondo te perché non puoi %1?"
+            "Che cosa ti aspetteresti che accadesse se fosse possibile %1?",
+            "Perché è importante per te che io %1?",
+            "Che cosa ti porta a formulare proprio questa domanda?"
         }
     },
     {
-        pattern = "non posso (.*)",
-        topic = "limite",
+        topic = "incertezza",
+        priority = 98,
+        keywords = { "non so cosa fare", "non ne ho idea", "sono indeciso", "sono indecisa" },
+        patterns = { "non so se (.+)", "non so (.+)" },
         responses = {
-            "Come fai a sapere con certezza di non poter %1?",
-            "Forse potresti %1 se provassi a guardare la cosa da un'altra prospettiva.",
-            "Cosa ci vorrebbe per permetterti di %1?"
+            "Che cosa ti crea più incertezza in questo momento?",
+            "Quali possibilità hai già preso in considerazione?",
+            "Quale parte della situazione ti sembra più difficile da valutare?",
+            "Che cosa potrebbe aiutarti a chiarire i tuoi dubbi?"
         }
     },
-    -- Categoria: Identità e Autosvalutazione
     {
-        pattern = "sono (.*)",
-        topic = "identita",
-        responses = {
-            "Sei venuto da me perché ti senti %1?",
-            "Da quanto tempo avverti di essere %1?",
-            "Credi sia normale sentirti così %1?",
-            "Essere %1 ti fa soffrire o ti dà una sorta di sicurezza?"
-        }
-    },
-    -- Categoria: Emozioni generiche
-    {
-        pattern = "mi sento (.*)",
         topic = "emozione",
+        priority = 105,
+        keywords = {},
+        patterns = { "mi sento (.+)", "mi sono sentito (.+)", "mi sono sentita (.+)" },
         responses = {
-            "Ti capita spesso di sentirti %1?",
-            "Cosa ti ricorda questo tuo sentirti %1?",
-            "Raccontami di più sul fatto di sentirti %1. Quando è iniziato?",
-            "Accogliere il fatto di sentirti %1 è il primo passo per capirlo."
+            "Da quanto tempo ti senti %1?",
+            "C'è stato un episodio che ha fatto emergere il sentirti %1?",
+            "In quali momenti questa sensazione diventa più evidente?",
+            "Che cosa vorresti che gli altri capissero del tuo sentirti %1?",
+            "Quando dici che ti senti %1, qual è la prima cosa che ti viene in mente?"
         }
     },
-    -- Categoria: Desideri
     {
-        pattern = "voglio (.*)",
+        topic = "rabbia",
+        priority = 90,
+        keywords = {
+            "rabbia", "arrabbiato", "arrabbiata", "arrabbiare", "arrabbiarsi",
+            "mi fa rabbia", "furioso", "furiosa", "infastidito", "infastidita",
+            "irritato", "irritata", "odio"
+        },
+        patterns = {},
+        responses = {
+            "Che cosa è successo poco prima che provassi questa rabbia?",
+            "Quale aspetto della situazione ti sembra più ingiusto?",
+            "C'è qualcosa che avresti voluto dire, ma hai preferito trattenere?",
+            "Oltre alla rabbia, riconosci anche un'altra emozione in questa situazione?",
+            "Che cosa vorresti cambiasse nel modo in cui viene affrontato il problema?"
+        }
+    },
+    {
+        topic = "stanchezza",
+        priority = 90,
+        keywords = {
+            "stanchezza", "stanco", "stanca", "esausto", "esausta",
+            "sfinito", "sfinita", "senza energie", "senza forze", "burnout"
+        },
+        patterns = {},
+        responses = {
+            "Qual è la cosa che in questo periodo ti sta richiedendo più energie?",
+            "Questa stanchezza è legata a qualcosa di preciso o si è accumulata nel tempo?",
+            "C'è un impegno che vorresti riuscire a ridimensionare?",
+            "Quali momenti della giornata ti risultano più pesanti?",
+            "Che cosa potrebbe rendere un po' più sostenibile la tua giornata?"
+        }
+    },
+    {
+        topic = "colpa",
+        priority = 88,
+        keywords = { "colpa", "sbagliato", "sbagliata", "fallito", "fallita", "fallimento" },
+        patterns = {},
+        responses = {
+            "Che cosa ti porta a giudicare così severamente quello che è successo?",
+            "Quale parte della situazione dipendeva davvero da te?",
+            "Che cosa hai imparato da questa esperienza, anche se è stata difficile?",
+            "Riusciresti a guardare l'accaduto con un po' più di distanza?"
+        }
+    },
+    {
+        topic = "sogni",
+        priority = 88,
+        keywords = { "sogno", "sognare", "passione", "desiderio", "progetto" },
+        patterns = { "vorrei tanto (.+)", "il mio sogno è (.+)" },
+        responses = {
+            "Che cosa ti attrae maggiormente di questo sogno o progetto?",
+            "Quale sarebbe un piccolo passo realistico per avvicinarti a questo progetto?",
+            "Da quanto tempo coltivi questo desiderio?",
+            "Che cosa ti piacerebbe imparare o scoprire lungo questo percorso?"
+        },
+        capture_responses = {
+            "Che cosa ti attrae maggiormente di %1?",
+            "Quale sarebbe un piccolo passo realistico per avvicinarti a %1?",
+            "Da quanto tempo coltivi il desiderio di %1?"
+        }
+    },
+    {
+        topic = "limite",
+        priority = 86,
+        keywords = { "non riesco", "non posso", "mi è impossibile", "mi sembra impossibile" },
+        patterns = { "non posso (.+)", "non riesco a (.+)" },
+        responses = {
+            "Qual è la difficoltà più concreta che incontri quando provi a %1?",
+            "Hai già provato un modo diverso per affrontare %1?",
+            "Che tipo di aiuto o risorsa potrebbe rendere più semplice %1?",
+            "Cosa ti fa sentire che questa possibilità sia fuori dalla tua portata?"
+        }
+    },
+    {
         topic = "desiderio",
+        priority = 82,
+        keywords = {},
+        patterns = { "voglio (.+)", "vorrei (.+)" },
         responses = {
-            "Cosa significherebbe per te riuscire ad ottenere %1?",
-            "Perché desideri così tanto %1?",
-            "Cosa faresti se tu ottenessi %1 oggi stesso?"
+            "Che cosa significherebbe per te riuscire a %1?",
+            "Qual è il motivo più importante per cui desideri %1?",
+            "Che cosa hai già fatto per provare a %1?",
+            "Come immagini che cambierebbero le cose se riuscissi a %1?"
         }
     },
-    -- Categoria: Ansia e Stress
     {
-        pattern = "ansioso|ansia|preoccupato|agitato|stressato|paura",
         topic = "ansia",
+        priority = 91,
+        keywords = {
+            "ansia", "ansioso", "ansiosa", "preoccupato", "preoccupata",
+            "agitato", "agitata", "stressato", "stressata", "paura", "spaventato",
+            "spaventata", "in apprensione"
+        },
+        patterns = { "mi preoccupa (.+)", "ho paura di (.+)" },
         responses = {
-            "L'ansia spesso ci segnala che stiamo cercando di controllare qualcosa che sfugge al nostro controllo. Cosa ti preoccupa di più?",
-            "Quando avverti questa forte agitazione, quali pensieri ti passano per la testa?",
-            "Fai un respiro profondo. Da dove credi che nasca questa tensione?",
-            "L'ansia sa essere molto logorante. C'è un pensiero ricorrente che l'alimenta?"
+            "Qual è la preoccupazione che occupa più spazio nei tuoi pensieri?",
+            "C'è qualcosa di concreto che temi possa accadere?",
+            "Quando questa agitazione aumenta, che cosa sta succedendo intorno a te?",
+            "Quale parte della situazione senti di poter affrontare per prima?",
+            "Ti capita di provare questa preoccupazione anche in altri contesti?"
         }
     },
-    -- Categoria: Tristezza e Solitudine
     {
-        pattern = "triste|depresso|giù|sconfortato|male|sol[oa]",
         topic = "tristezza",
+        priority = 91,
+        keywords = {
+            "triste", "tristezza", "depresso", "depressa", "giù", "giù di morale",
+            "male", "sconfortato", "sconfortata", "solo", "sola", "solitudine",
+            "demoralizzato", "demoralizzata"
+        },
+        patterns = {},
         responses = {
-            "Mi dispiace che tu provi questa tristezza. C'è un episodio specifico che ha scatenato questa sensazione?",
-            "Quando ti senti così giù, cosa ti aiuta solitamente a trovare un minimo di conforto?",
-            "La tristezza merita di essere ascoltata. Ti va di parlarne?",
-            "Sentirsi soli o giù di morale toglie ogni colore alla giornata. Ti va di raccontarmi cosa provi?"
+            "Ti va di raccontarmi che cosa ha contribuito a farti sentire così?",
+            "Da quanto tempo questa sensazione accompagna le tue giornate?",
+            "C'è qualcosa che, anche solo per poco, rende la situazione più leggera?",
+            "Ti senti compreso dalle persone con cui ne parli?",
+            "Qual è la cosa che vorresti riuscire a esprimere in questo momento?"
         }
     },
-    -- Categoria: Lavoro e Studio
     {
-        pattern = "lavoro|ufficio|capo|colleghi|università|studio|scuola|carriera",
         topic = "lavoro",
+        priority = 94,
+        keywords = {
+            "lavoro", "ufficio", "capo", "collega", "colleghi", "università",
+            "studio", "studiare", "scuola", "carriera", "esame", "insegnante"
+        },
+        patterns = {},
         responses = {
-            "Il lavoro e lo studio occupano gran parte delle nostre giornate. Come descriveresti il clima in cui ti trovi?",
-            "Ti senti valorizzato per l'impegno che metti in quello che fai?",
-            "In che modo questa situazione lavorativa sta influenzando il tuo equilibrio personale?",
-            "Ci sono tensioni specifiche con qualcuno nell'ambiente lavorativo o di studio?"
+            "Qual è l'aspetto del lavoro o dello studio che ti pesa maggiormente?",
+            "Ti senti ascoltato e valorizzato nell'ambiente in cui ti trovi?",
+            "Come sta influenzando il resto della tua giornata questa situazione?",
+            "C'è una persona o un episodio preciso che vorresti approfondire?",
+            "Che cosa dovrebbe cambiare per rendere questo contesto più sereno?"
         }
     },
-    -- Categoria: Famiglia
     {
-        pattern = "madre|padre|mamma|papà|famiglia|fratello|sorella|genitori",
         topic = "famiglia",
+        priority = 94,
+        keywords = {
+            "madre", "padre", "mamma", "papà", "famiglia", "fratello",
+            "sorella", "genitori", "figlio", "figlia", "parente", "parenti"
+        },
+        patterns = {},
         responses = {
-            "I legami familiari sono profondi e complessi. Che impatto ha la tua famiglia sul tuo stato d'animo?",
-            "Ti va di approfondire il rapporto con i tuoi familiari?",
-            "Spesso le dinamiche familiari ci accompagnano a lungo. Ti recognized in questo?",
-            "Qual è il ricordo o la dinamica familiare che ti pesa di più adesso?"
+            "Che effetto ha questa situazione sul rapporto con la tua famiglia?",
+            "C'è un aspetto del rapporto con i tuoi familiari che vorresti cambiare?",
+            "Quando si presenta questa dinamica, come reagisci di solito?",
+            "Qual è la cosa che vorresti riuscire a comunicare ai tuoi familiari?",
+            "Ti sembra che gli altri comprendano il tuo punto di vista?"
         }
     },
-    -- Categoria: Relazioni interpersonali
     {
-        pattern = "partner|fidanzat[oa]|moglie|marito|ragazz[oa]|amico|amica|amici",
         topic = "relazioni",
+        priority = 94,
+        keywords = {
+            "partner", "fidanzato", "fidanzata", "moglie", "marito", "ragazzo",
+            "ragazza", "amico", "amica", "amici", "amicizia", "relazione"
+        },
+        patterns = {},
         responses = {
-            "Le relazioni con gli altri sono un importante specchio interiore. Come ti senti all'interno di questo rapporto?",
-            "Riesci a esprimere apertamente i tuoi bisogni con questa persona?",
-            "Pensi che questa relazione ti stia facendo crescere o ti stia prosciugando energie?",
-            "C'è qualcosa che vorresti dire a questa persona ma che finora hai trattenuto?"
+            "Come ti senti quando sei insieme a questa persona?",
+            "Riesci a comunicare apertamente quello di cui hai bisogno?",
+            "Qual è l'aspetto più positivo di questo rapporto? E quello più difficile?",
+            "C'è qualcosa che vorresti chiarire con questa persona?",
+            "Secondo te, che cosa potrebbe migliorare il vostro modo di comunicare?"
         }
     },
-    -- Categoria: Domande sulla natura del Bot
     {
-        pattern = "computer|macchina|intelligenza artificiale|robot|chatbot|luiza",
         topic = "tecnologia",
+        priority = 89,
+        keywords = { "computer", "macchina", "intelligenza artificiale", "robot", "chatbot", "luiza", "eliza" },
+        patterns = {},
         responses = {
-            "Sono Luiza, una terapeuta virtuale basata sul modello del 1966. Ma in questo momento, l'attenzione è tutta focalizzata su di te.",
-            "Più che sulla mia natura artificiale, ti chiederei: come ti fa sentire parlare con un programma di ciò che vivi?",
-            "Posso offrirti uno spazio di ascolto neutro. Credi che questo ti aiuti a riflettere?"
+            "Sono Luiza, un programma conversazionale ispirato al progetto ELIZA. Come mai ti interessa questo argomento?",
+            "Funziono attraverso regole e trasformazioni del testo: quale aspetto dei chatbot vorresti conoscere?",
+            "La mia capacità di rispondere dipende dai pattern programmati. Che cosa ti incuriosisce del mio funzionamento?"
         }
     },
-    -- Categoria: Saluti
     {
-        pattern = "ciao|salve|buongiorno|buonasera",
-        topic = "saluto",
+        topic = "gratitudine",
+        priority = 85,
+        keywords = { "grazie", "ti ringrazio", "molto gentile" },
+        patterns = {},
         responses = {
-            "Ciao! Sono qui per ascoltarti. Di cosa vorresti parlare oggi?",
-            "Salve. Mettiti comodo: come ti senti in questo momento?",
-            "Benvenuto. Prenditi tutto il tempo di cui hai bisogno."
+            "Prego! C'è qualcos'altro su cui vorresti riflettere?",
+            "Sono qui per proseguire la conversazione. Vuoi aggiungere qualcosa?",
+            "Di nulla. Quale aspetto vorresti approfondire adesso?"
+        }
+    },
+    {
+        topic = "saluto",
+        priority = 80,
+        keywords = { "ciao", "salve", "buongiorno", "buonasera", "buon pomeriggio" },
+        patterns = {},
+        responses = {
+            "Ciao! Di che cosa ti piacerebbe parlare?",
+            "Salve! Da dove vuoi iniziare oggi?",
+            "Ciao, bentornato. Che cosa ti passa per la mente?"
+        }
+    },
+    {
+        topic = "identita",
+        priority = 60,
+        keywords = {},
+        patterns = { "sono (.+)" },
+        responses = {
+            "Quando dici di essere %1, a che cosa ti riferisci esattamente?",
+            "Da quanto tempo ti descriveresti come %1?",
+            "In quali situazioni ti capita soprattutto di sentirti %1?",
+            "Che significato ha per te definirti %1?"
         }
     }
 }
 
 
 -- ---------------------------------------------------------------------
--- 5. RISPOSTE CONTESTUALI E DI FALLBACK
+-- 6. RISPOSTE CONTESTUALI E RISPOSTE GENERICHE
 -- ---------------------------------------------------------------------
--- Domande di approfondimento agganciate al topic precedente
+-- Le risposte contestuali sono organizzate per argomento. Vengono usate
+-- soprattutto quando l'utente invia una risposta breve, come "sì", "no"
+-- o "non lo so", oppure quando una nuova frase non attiva alcuna regola.
 local context_responses = {
-    lavoro = "Prima hai accennato al tuo lavoro o studio. Pensi che c'entri con quello che stai dicendo ora?",
-    famiglia = "Ripensando a ciò che dicevi sulla tua famiglia, vedi un collegamento con questo argomento?",
-    ansia = "Dato che prima avvertivi molta ansia, credi che questo pensiero stia alimentando la tua agitazione?",
-    tristezza = "Questo discorso si collega in qualche modo alla tristezza di cui parlavi prima?",
-    relazioni = "Ha a che fare con le relazioni di cui discutevamo poco fa?",
-    rabbia = "Questo risentimento si collega alla rabbia di cui parlavamo prima?",
-    stanchezza = "Senti che la stanchezza di cui accennavi stia aggravando questo stato d'animo?"
+    bisogno = {
+        "Prima parlavi di qualcosa di cui senti il bisogno. È cambiato qualcosa da allora?",
+        "Vuoi approfondire che cosa renderebbe importante per te quel bisogno?"
+    },
+    incertezza = {
+        "Riprendendo i dubbi di cui parlavi, qual è la domanda a cui vorresti trovare una risposta?",
+        "C'è qualche elemento nuovo che ti aiuta a valutare meglio le possibilità?"
+    },
+    rabbia = {
+        "Torniamo a ciò che ti ha fatto arrabbiare: quale aspetto senti di non aver ancora chiarito?",
+        "La situazione di cui parlavi è cambiata oppure ti pesa ancora allo stesso modo?"
+    },
+    stanchezza = {
+        "Ripensando alla stanchezza che descrivevi, c'è qualcosa che potresti alleggerire?",
+        "Quale impegno continua a richiederti più energie?"
+    },
+    colpa = {
+        "Riguardo a ciò che ti faceva sentire in colpa, c'è un elemento che ora vedi diversamente?",
+        "Quale parte di quella situazione vorresti comprendere meglio?"
+    },
+    sogni = {
+        "Vuoi tornare al progetto di cui parlavi? Quale sarebbe il prossimo piccolo passo?",
+        "Quel desiderio è ancora importante per te? Che cosa lo rende tale?"
+    },
+    limite = {
+        "Riprendendo la difficoltà che descrivevi, qual è l'ostacolo più concreto?",
+        "È cambiato qualcosa nel modo in cui guardi a quella possibilità?"
+    },
+    emozione = {
+        "Prima descrivevi come ti senti. Questa sensazione è cambiata mentre ne parlavi?",
+        "C'è un dettaglio in più che può aiutarmi a capire meglio ciò che intendi?"
+    },
+    desiderio = {
+        "Vuoi tornare a ciò che desideri ottenere? Quale aspetto conta di più per te?",
+        "Hai individuato un modo per avvicinarti a quello che vorresti?"
+    },
+    ansia = {
+        "Ripensando alla preoccupazione di prima, è cambiato qualcosa nella situazione?",
+        "Quale pensiero continua a tornarti in mente quando ci ripensi?"
+    },
+    tristezza = {
+        "La sensazione di cui parlavi è ancora presente o qualcosa è cambiato?",
+        "C'è qualcosa che vorresti aggiungere su quello che ti ha fatto stare male?"
+    },
+    lavoro = {
+        "Torniamo al lavoro o allo studio: qual è l'aspetto che vorresti affrontare per primo?",
+        "È successo qualcosa di nuovo nell'ambiente di lavoro o di studio?"
+    },
+    famiglia = {
+        "Riprendendo il discorso sulla tua famiglia, c'è un episodio preciso che vuoi raccontare?",
+        "Il rapporto di cui parlavi è cambiato in qualche modo?"
+    },
+    relazioni = {
+        "Vuoi approfondire il rapporto di cui parlavi? Che cosa è successo nel frattempo?",
+        "Quale aspetto di questa relazione vorresti fosse compreso meglio?"
+    },
+    tecnologia = {
+        "Vuoi continuare a parlare di come funzionano i chatbot?",
+        "C'è un'altra curiosità su Luiza o su ELIZA che vorresti approfondire?"
+    },
+    identita = {
+        "Prima ti descrivevi in un certo modo. È una sensazione che riconosci da tempo?",
+        "Vuoi spiegarmi meglio che cosa intendi con quella descrizione?"
+    },
+    gratitudine = {
+        "Possiamo continuare: quale argomento vorresti affrontare?",
+        "C'è qualcos'altro che ti piacerebbe raccontare?"
+    },
+    saluto = {
+        "Da quale argomento vorresti iniziare?",
+        "C'è qualcosa che ti è successo oggi e di cui vuoi parlare?"
+    }
 }
 
--- Risposte generiche di ascolto attivo (usate quando nessun pattern corrisponde)
 local default_responses = {
-    "Molto interessante. Ti prego, continua a sviluppare questo pensiero.",
-    "Raccontami qualcosa di più a questo proposito.",
-    "Come ti fa sentire tutto questo mentre lo racconti ad alta voce?",
-    "Puoi approfondire questo punto specifico?",
-    "Perché ritieni che questo sia così importante per te?",
-    "Capisco. Cos'altro ti passa per la mente adesso?",
-    "C'è un dettaglio in particolare di questa storia che vorresti mettere a fuoco?",
-    "Ascoltandoti, mi chiedo cosa ti aspetti che accada adesso."
+    "Puoi raccontarmi qualcosa di più su questo?",
+    "Qual è l'aspetto che consideri più importante?",
+    "Che cosa ti fa vedere la situazione in questo modo?",
+    "C'è un esempio concreto che potrebbe aiutarmi a capire meglio?",
+    "Come si collega questo a ciò che è successo negli ultimi giorni?",
+    "Che cosa vorresti riuscire a chiarire parlando di questo argomento?",
+    "Mi sembra un punto interessante. Da dove vorresti cominciare ad approfondirlo?",
+    "Quale parte di quello che hai raccontato senti più vicina ai tuoi pensieri attuali?"
+}
+
+local short_replies = {
+    ["si"] = true,
+    ["sì"] = true,
+    ["no"] = true,
+    ["forse"] = true,
+    ["boh"] = true,
+    ["non lo so"] = true,
+    ["non so"] = true,
+    ["non saprei"] = true,
+    ["esatto"] = true,
+    ["davvero"] = true,
+    ["non proprio"] = true,
+    ["può darsi"] = true,
+    ["e quindi"] = true,
+    ["perché"] = true,
+    ["perche"] = true,
+    ["in che senso"] = true
 }
 
 
 -- ---------------------------------------------------------------------
--- 6. FUNZIONE DI ELABORAZIONE DELL'INPUT (M.reply)
+-- 7. SELEZIONE DELLA REGOLA PIÙ ADATTA
 -- ---------------------------------------------------------------------
---- Elabora la frase inviata dall'utente e restituisce la risposta di Luiza
--- utilizzando un parser basato su scoring di specificità e gestione delle contrazioni.
--- @param input string: La frase dell'utente.
--- @return string: La risposta generata da Luiza.
--- @return boolean: Flag che indica true se l'utente ha chiesto di uscire.
-function M.reply(input)
-    -- Controlla se l'input è vuoto o assente
-    if not input or input == "" then
-        return "Ti ascolto, dimmi pure.", false
-    end
-
-    -- Incrementa il contatore dei turni
-    context.turns_count = context.turns_count + 1
-
-    -- Normalizzazione avanzata: minuscolo, rimozione spazi e punteggiatura superflua
-    local clean_input = input:lower()
-    clean_input = clean_input:gsub("^%s*(.-)%s*$", "%1")
-    clean_input = clean_input:gsub("[%.,%?!;]+$", "")
-    clean_input = clean_input:gsub("[''`]", "'")
-
-    -- Controllo comandi di uscita della conversazione
-    if clean_input == "esci" or clean_input == "quit" or clean_input == "exit" or clean_input == "ciao ciao" then
-        return "Arrivederci. Spero che questa chiacchierata ti sia stata utile per fare un po' di chiarezza. A presto!", true
-    end
-
-    -- PASSAGGIO 1: Scoring e Pattern Matching Avanzato
-    -- Valuta tutte le regole assegnando un punteggio basato sulla specificità del pattern
-    local best_match = nil
+--- Cerca la regola più specifica confrontando tutte le parole chiave e i
+-- pattern con catture. Restituisce la regola e i valori catturati.
+-- @param text string Input normalizzato.
+-- @return table|nil Regola selezionata.
+-- @return table Catture da inserire nel testo della risposta.
+local function find_best_rule(text)
+    local best_rule = nil
+    local best_captures = {}
     local best_score = -1
-    local best_captured = nil
 
     for _, rule in ipairs(rules) do
-        local captured = { clean_input:match(rule.pattern) }
-        if #captured > 0 then
-            -- Calcola la specificità del pattern escludendo i caratteri speciali regex
-            local literal_pattern = rule.pattern:gsub("%%.", ""):gsub("%(.-%)", ""):gsub("[%[%]%*%+%?%%]", "")
-            local score = #literal_pattern + (#rule.pattern > 12 and 5 or 0)
+        -- Le parole chiave sono cercate come testo semplice, con confini
+        -- di parola: "ansia" non deve corrispondere, per esempio, a "fantasia".
+        for _, keyword in ipairs(rule.keywords or {}) do
+            if contains_phrase(text, keyword) then
+                local score = calculate_score(rule.priority, #keyword)
+                if score > best_score then
+                    best_score = score
+                    best_rule = rule
+                    best_captures = {}
+                end
+            end
+        end
 
-            if score > best_score then
-                best_score = score
-                best_match = rule
-                best_captured = captured
+        -- I pattern Lua vengono usati soltanto quando servono catture.
+        for _, pattern in ipairs(rule.patterns or {}) do
+            local found = { text:find(pattern) }
+            if found[1] then
+                local captures = {}
+                for index = 3, #found do
+                    if found[index] ~= nil then
+                        table.insert(captures, found[index])
+                    end
+                end
+
+                local capture_start = pattern:find("(", 1, true)
+                local specificity = capture_start and (capture_start - 1) or #pattern
+                local score = calculate_score(rule.priority, specificity)
+                if score > best_score then
+                    best_score = score
+                    best_rule = rule
+                    best_captures = captures
+                end
             end
         end
     end
 
-    if best_match then
-        if best_match.topic then
-            push_topic(best_match.topic)
-        end
+    return best_rule, best_captures
+end
 
-        local template = best_match.responses[math.random(#best_match.responses)]
-        local response = template
+--- Inserisce i gruppi catturati nella risposta, dopo la riflessione.
+-- @param template string Modello della risposta.
+-- @param captures table Valori catturati dal pattern.
+-- @return string Risposta completa.
+local function fill_response(template, captures)
+    return (template:gsub("%%(%d+)", function(index)
+        local captured = captures[tonumber(index)]
+        return reflect(captured or "")
+    end))
+end
 
-        -- Sostituzione dinamica dei gruppi catturati con riflessione grammaticale
-        for i, cap in ipairs(best_captured) do
-            local reflected_capture = reflect(cap)
-            response = response:gsub("%%" .. i, reflected_capture)
-        end
+--- Restituisce una risposta collegata all'ultimo argomento riconosciuto.
+-- @return string|nil Risposta contestuale, oppure nil se non disponibile.
+local function get_context_response()
+    local topic = context.last_topic
+    local responses = topic and context_responses[topic]
 
-        return response, false
+    if not responses then
+        return nil
     end
 
-    -- PASSAGGIO 2: Richiamo contestuale intelligente basato sullo storico recente
-    if context.last_topic and context_responses[context.last_topic] and math.random(1, 100) > 50 then
-        local resp = context_responses[context.last_topic]
-        context.last_topic = nil -- Consuma il topic per evitare ripetizioni immediate
-        return resp, false
-    end
-
-    -- PASSAGGIO 3: Risposta generica di ascolto attivo (fallback)
-    return default_responses[math.random(#default_responses)], false
+    return choose_response(responses, "context_" .. topic)
 end
 
 
 -- ---------------------------------------------------------------------
--- 7. CICLO PRINCIPALE REPL (Esecuzione da Terminale)
+-- 8. FUNZIONE PUBBLICA DI ELABORAZIONE (M.reply)
 -- ---------------------------------------------------------------------
-local is_main_script = debug.getinfo(3) == nil
+--- Elabora il testo dell'utente e genera una risposta.
+-- @param input string Messaggio scritto dall'utente.
+-- @return string Risposta generata.
+-- @return boolean True se l'utente ha richiesto di terminare la sessione.
+function M.reply(input)
+    if type(input) ~= "string" then
+        return "Puoi scrivere un messaggio così posso risponderti.", false
+    end
+
+    local clean_input = normalize_input(input)
+    if clean_input == "" then
+        return "Ti ascolto: quando vuoi, continua pure.", false
+    end
+
+    -- I comandi di uscita vengono controllati prima delle regole generiche.
+    if clean_input == "esci"
+        or clean_input == "quit"
+        or clean_input == "exit"
+        or clean_input == "ciao ciao" then
+        return "Arrivederci! Grazie per la conversazione. A presto!", true
+    end
+
+    context.turns_count = context.turns_count + 1
+
+    local best_rule, captures = find_best_rule(clean_input)
+
+    if best_rule then
+        push_topic(best_rule.topic)
+
+        -- Se il pattern ha catturato una frase e la regola dispone di
+        -- risposte dinamiche, usa quelle; altrimenti resta sul pool generico.
+        local response_pool = best_rule.responses
+        if #captures > 0 and best_rule.capture_responses then
+            response_pool = best_rule.capture_responses
+        end
+
+        local template = choose_response(
+            response_pool,
+            "rule_" .. best_rule.topic
+        )
+
+        local response = fill_response(template, captures)
+        context.last_user_input = clean_input
+        return response, false
+    end
+
+    -- Per risposte brevi o riferimenti poco specifici, è preferibile
+    -- riprendere l'ultimo argomento invece di proporre una domanda casuale.
+    if context.last_topic and short_replies[clean_input] then
+        local response = get_context_response()
+        if response then
+            context.last_user_input = clean_input
+            return response, false
+        end
+    end
+
+    -- Per messaggi non riconosciuti ma non brevi, il richiamo contestuale
+    -- viene usato con probabilità moderata, lasciando spazio al fallback.
+    if context.last_topic and math.random(1, 100) <= 35 then
+        local response = get_context_response()
+        if response then
+            context.last_user_input = clean_input
+            return response, false
+        end
+    end
+
+    context.last_user_input = clean_input
+    return choose_response(default_responses, "default"), false
+end
+
+--- Azzera lo stato della conversazione e gli indici delle risposte.
+-- Utile per avviare una nuova sessione o per isolare i test automatici.
+function M.reset()
+    context.last_topic = nil
+    context.topic_history = {}
+    context.last_user_input = nil
+    context.turns_count = 0
+
+    for key in pairs(last_response_index) do
+        last_response_index[key] = nil
+    end
+end
+
+
+-- ---------------------------------------------------------------------
+-- 9. CICLO PRINCIPALE REPL (ESECUZIONE DA TERMINALE)
+-- ---------------------------------------------------------------------
+-- Il controllo confronta il percorso del file corrente con arg[0]. In
+-- questo modo il REPL parte quando il file viene eseguito direttamente,
+-- ma non quando viene caricato con require() da un altro programma.
+local source_info = debug and debug.getinfo and debug.getinfo(1, "S")
+local is_main_script = source_info
+    and arg
+    and arg[0]
+    and source_info.source == "@" .. arg[0]
 
 if is_main_script then
     print("------------------------------------------------------------------")
-    print("LUIZA (Versione " .. M.version .. "-beta): La tua terapeuta virtuale in Italiano")
+    print("LUIZA (Versione " .. M.version .. " Beta): Chatbot conversazionale in italiano")
     print("Digita 'esci', 'quit' o 'exit' per terminare la conversazione.")
     print("------------------------------------------------------------------")
-    print("LUIZA: Ciao. Sono qui per ascoltarti. Come ti senti in questo momento?")
+    print("LUIZA: Ciao! Sono qui per conversare. Di che cosa vorresti parlare?")
 
-    -- Loop interattivo continuo
     while true do
         io.write("\n> ")
         io.flush()
 
         local user_input = io.read()
         if not user_input then
-            print("\nLUIZA: Arrivederci.")
+            print("\nLUIZA: Arrivederci!")
             break
         end
 
@@ -455,5 +861,6 @@ if is_main_script then
     end
 end
 
--- Restituisce la tabella del modulo Luiza
+-- L'esportazione di M rende disponibili M.reply(), M.reset() e M.version
+-- quando Luiza viene caricato da un altro script tramite require().
 return M
